@@ -1,3 +1,5 @@
+import yahooFinance from 'yahoo-finance2';
+
 export interface HoldingData {
   ticker: string;
   name: string;
@@ -6,48 +8,47 @@ export interface HoldingData {
   weekChangePercent: number;
 }
 
-const FMP = 'https://financialmodelingprep.com/api/v3';
-
 export async function getHoldingData(ticker: string): Promise<HoldingData> {
-  const apiKey = process.env.FMP_API_KEY;
-  if (!apiKey) throw new Error('FMP_API_KEY environment variable is not set');
+  // yahoo-finance2 handles Yahoo's crumb/cookie auth automatically.
+  // Type assertion required: the package's `this: ModuleThis` signature
+  // doesn't reconcile with the exported class instance in TypeScript.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const yf = yahooFinance as any;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const quoteResult: any[] = await yf.quote(ticker);
 
-  // --- Current quote: price, name, market cap ---
-  const quoteRes = await fetch(`${FMP}/quote/${ticker}?apikey=${apiKey}`);
+  // quote() always returns an array; grab the first (and only) element.
+  const quote = Array.isArray(quoteResult) ? quoteResult[0] : quoteResult;
+  if (!quote) throw new Error(`No quote data returned for ${ticker}`);
 
-  if (!quoteRes.ok) {
-    throw new Error(`FMP quote API returned HTTP ${quoteRes.status} for ${ticker}`);
-  }
-
-  const quoteJson = await quoteRes.json();
-  const quote = Array.isArray(quoteJson) ? quoteJson[0] : quoteJson;
-
-  if (!quote || typeof quote.price === 'undefined') {
-    throw new Error(`No quote data from FMP for ${ticker}`);
-  }
-
-  const currentPrice: number = quote.price ?? 0;
-  const name: string = quote.name ?? ticker;
+  const currentPrice: number = quote.regularMarketPrice ?? 0;
+  const name: string = quote.shortName ?? quote.longName ?? ticker;
   const marketCap: number = quote.marketCap ?? 0;
 
-  // --- Historical prices for 1-week change ---
-  const from = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
-    .toISOString()
-    .split('T')[0];
-  const to = new Date().toISOString().split('T')[0];
-
+  // Fetch 10 days of daily closes from Yahoo Finance's chart API.
+  // This endpoint typically does not require a crumb token.
   let weekAgoPrice = currentPrice;
   try {
-    const histRes = await fetch(
-      `${FMP}/historical-price-full/${ticker}?from=${from}&to=${to}&apikey=${apiKey}`
+    const chartRes = await fetch(
+      `https://query2.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(ticker)}?range=10d&interval=1d&includePrePost=false`,
+      {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; topholdings/1.0)',
+          Accept: 'application/json',
+        },
+      },
     );
-    if (histRes.ok) {
-      const histJson = await histRes.json();
-      // FMP returns newest-first; last entry is ~10 days ago
-      const historical: { date: string; close: number }[] =
-        histJson?.historical ?? [];
-      if (historical.length > 0) {
-        weekAgoPrice = historical[historical.length - 1].close ?? currentPrice;
+
+    if (chartRes.ok) {
+      const chartJson = await chartRes.json();
+      const closes: (number | null)[] =
+        chartJson?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+      const valid = closes.filter(
+        (c): c is number => c !== null && typeof c === 'number',
+      );
+      if (valid.length > 0) {
+        // valid[0] is the oldest close in the window (~10 days ago)
+        weekAgoPrice = valid[0];
       }
     }
   } catch {
