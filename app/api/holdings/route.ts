@@ -45,15 +45,16 @@ export async function GET(request: NextRequest) {
 
         return { ...holding, reason, error: null };
       } catch (err) {
-        console.error(`Error processing ${ticker}:`, err);
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`Error processing ${ticker}:`, msg);
         return {
           ticker,
           name: ticker,
           marketCap: 0,
           currentPrice: 0,
           weekChangePercent: 0,
-          reason: 'Data temporarily unavailable.',
-          error: 'Failed to fetch data',
+          reason: `⚠ Error: ${msg}`,
+          error: msg,
         };
       }
     })
